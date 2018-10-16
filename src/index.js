@@ -9,6 +9,7 @@ const camelCase = require('lodash.camelcase')
 const log = require('debug')('kitsunet:slice-tracker')
 
 const DEFAULT_TOPIC = `kitsunet:slice`
+const DEFAULT_SLICE_TIMEOUT = 60 * 10000
 
 function normalizeSlice (slice) {
   mapKeys(slice, (_, key) => {
@@ -16,8 +17,14 @@ function normalizeSlice (slice) {
   })
 }
 
+function timeout (length) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, length)
+  })
+}
+
 class KitsunetSliceTracker extends EventEmitter {
-  constructor ({ node, blockTracker, topic }) {
+  constructor ({ node, blockTracker }) {
     super()
 
     assert(node, 'node is required!')
@@ -26,7 +33,7 @@ class KitsunetSliceTracker extends EventEmitter {
 
     this.node = node
     this.blockTracker = blockTracker
-    this.topic = topic || DEFAULT_TOPIC
+    this.topic = DEFAULT_TOPIC
     this.started = false
 
     this.peerSlices = new Map()
@@ -63,9 +70,26 @@ class KitsunetSliceTracker extends EventEmitter {
   async getSliceForBlock (path, depth, block) {
     const sliceId = `${path}-${depth}-${block.stateRoot}`
     const slices = this.slices(sliceId)
-    if (slices.has(block.stateRoot)) return slices.get(sliceId)
-    return Promise(resolve => this.on(`latest:${path}-${depth}`, resolve))
-      .then(() => slices.get(sliceId))
+
+    // if slice exists, return it
+    if (slices.has(sliceId)) {
+      return slices.get(sliceId)
+    }
+
+    const deferred = Promise.race([
+      Promise((resolve) => {
+        this.on(`latest:${path}-${depth}`, (slice) => {
+          if (slice.sliceId === sliceId) {
+            return resolve(slice)
+          }
+        })
+      }).then(() => slices.get(sliceId)),
+      timeout(DEFAULT_SLICE_TIMEOUT)
+    ])
+
+    // subscribe to slice topic
+    this.node.multicast.subscribe(`${this.topic}:${sliceId}`, this._handler.bind(this), () => { })
+    return deferred
   }
 
   _handler (msg) {
@@ -78,18 +102,6 @@ class KitsunetSliceTracker extends EventEmitter {
       this.emit(`slice:${path}-${depth}`, slice)
     } catch (err) {
       log(err)
-    }
-  }
-
-  start () {
-    if (!this.started) {
-      this.node.multicast.subscribe(this.topic, this._handler.bind(this), () => { })
-    }
-  }
-
-  stop () {
-    if (this.started) {
-      this.node.multicast.unsubscribe(this.topic, this._handler.bind(this), () => { })
     }
   }
 }
