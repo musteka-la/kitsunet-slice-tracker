@@ -3,18 +3,24 @@
 const EventEmitter = require('events')
 const assert = require('assert')
 
-const mapKeys = require('lodash.mapkeys')
+const transform = require('lodash.transform')
 const camelCase = require('lodash.camelcase')
+const isPlainObject = require('lodash.isplainobject')
 
 const log = require('debug')('kitsunet:slice-tracker')
 
 const DEFAULT_TOPIC = `kitsunet:slice`
 const DEFAULT_SLICE_TIMEOUT = 60 * 10000
 
-function normalizeSlice (slice) {
-  mapKeys(slice, (_, key) => {
-    return camelCase(key)
-  })
+function normalizeSlice (obj) {
+  return transform(obj, (result, value, key) => {
+    if (key === 'metadata') { return }
+    if (isPlainObject(value)) {
+      value = normalizeSlice(value)
+    }
+
+    result[camelCase(key)] = value
+  }, {})
 }
 
 function timeout (length) {
@@ -68,12 +74,14 @@ class KitsunetSliceTracker extends EventEmitter {
   }
 
   async getSliceForBlock (path, depth, block) {
-    const sliceId = `${path}-${depth}-${block.stateRoot}`
-    const slices = this.slices(sliceId)
+    return this.getSliceById(`${path}-${depth}-${block.stateRoot}`)
+  }
 
+  async getSliceById (sliceId) {
+    const [path, depth] = sliceId.split('-')
     // if slice exists, return it
-    if (slices.has(sliceId)) {
-      return slices.get(sliceId)
+    if (this.slices.has(sliceId)) {
+      return this.slices.get(sliceId)
     }
 
     const deferred = Promise.race([
@@ -83,7 +91,7 @@ class KitsunetSliceTracker extends EventEmitter {
             return resolve(slice)
           }
         })
-      }).then(() => slices.get(sliceId)),
+      }).then(() => this.slices.get(sliceId)),
       timeout(DEFAULT_SLICE_TIMEOUT)
     ])
 
