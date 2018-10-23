@@ -64,7 +64,7 @@ class KitsunetSliceTracker extends EventEmitter {
         return cb(msg)
       }
       peerSlices.add(slice.sliceId)
-      return true
+      return cb(null, msg)
     }])
   }
 
@@ -75,6 +75,14 @@ class KitsunetSliceTracker extends EventEmitter {
 
   async getSliceForBlock (path, depth, block) {
     return this.getSliceById(`${path}-${depth}-${block.stateRoot}`)
+  }
+
+  async start () {
+    // here for completeness
+  }
+
+  async stop () {
+    // here for completeness
   }
 
   async getSliceById (sliceId) {
