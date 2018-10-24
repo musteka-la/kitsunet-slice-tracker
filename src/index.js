@@ -118,10 +118,14 @@ class KitsunetSliceTracker extends EventEmitter {
 
     // subscribe to slice topic
     // this.node.multicast.addFrwdHooks(`${this.topic}:${path}-${depth}`, [this._hook.bind(this)])
+    this.subscribe({path, depth})
+    return deferred
+  }
+
+  subscribe ({path, depth}) {
     this.node.multicast.subscribe(`${this.topic}:${path}-${depth}`,
       this._handler.bind(this),
       () => { })
-    return deferred
   }
 
   _handler (msg) {
