@@ -10,16 +10,20 @@ const isPlainObject = require('lodash.isplainobject')
 const log = require('debug')('kitsunet:slice-tracker')
 
 const DEFAULT_TOPIC = `kitsunet:slice`
-const DEFAULT_SLICE_TIMEOUT = 60 * 10000
+const DEFAULT_SLICE_TIMEOUT = 2 * 60 * 10000
+const DEFAULT_DEPTH = 10
 
-function normalizeSlice (obj) {
+function normalizeKeys (obj) {
   return transform(obj, (result, value, key) => {
     if (key === 'metadata') { return }
     if (isPlainObject(value)) {
-      value = normalizeSlice(value)
+      value = normalizeKeys(value)
     }
 
-    result[camelCase(key)] = value
+    if (key.indexOf('-') > 0) {
+      key = camelCase(key)
+    }
+    result[key] = value
   }, {})
 }
 
@@ -30,7 +34,7 @@ function timeout (length) {
 }
 
 class KitsunetSliceTracker extends EventEmitter {
-  constructor ({ node, blockTracker }) {
+  constructor ({ node, blockTracker, depth }) {
     super()
 
     assert(node, 'node is required!')
@@ -41,40 +45,45 @@ class KitsunetSliceTracker extends EventEmitter {
     this.blockTracker = blockTracker
     this.topic = DEFAULT_TOPIC
     this.started = false
+    this.depth = depth || DEFAULT_DEPTH
 
     this.peerSlices = new Map()
     this.slices = new Map()
-
-    this.node.multicast.addFrwdHooks(this.topic, [(peer, msg, cb) => {
-      let slice = null
-      try {
-        slice = normalizeSlice(JSON.parse(msg.data.toString()))
-        if (!slice) {
-          return cb(new Error(`No slice in message!`))
-        }
-      } catch (err) {
-        log(err)
-        return cb(err)
-      }
-
-      const peerSlices = this.peerSlices.has(peer.info.id.toB58String()) || new Set()
-      if (peerSlices.has(slice.sliceId)) {
-        const msg = `already forwarded to peer, skipping slice ${slice.sliceId}`
-        log(msg)
-        return cb(msg)
-      }
-      peerSlices.add(slice.sliceId)
-      return cb(null, msg)
-    }])
   }
 
-  async getLatestSlice (path, depth) {
+  _hook (peer, msg, cb) {
+    let slice = null
+    try {
+      slice = normalizeKeys(JSON.parse(msg.data.toString()))
+      if (!slice) {
+        return cb(new Error(`No slice in message!`))
+      }
+    } catch (err) {
+      log(err)
+      return cb(err)
+    }
+
+    const peerSlices = this.peerSlices.has(peer.info.id.toB58String()) || new Set()
+    if (peerSlices.has(slice.sliceId)) {
+      const msg = `already forwarded to peer, skipping slice ${slice.sliceId}`
+      log(msg)
+      return cb(msg)
+    }
+    peerSlices.add(slice.sliceId)
+    return cb(null, msg)
+  }
+
+  async getLatestSlice (path, depth, isStorage) {
     const block = await this.blockTracker.getLatestBlock()
-    return this.getSliceForBlock(path, depth, block)
+    return this.getSliceForBlock(path, depth || this.depth, block)
   }
 
-  async getSliceForBlock (path, depth, block) {
-    return this.getSliceById(`${path}-${depth}-${block.stateRoot}`)
+  async getSliceForBlock (path, depth, block, isStorage) {
+    let stateRoot = block.stateRoot
+    if (stateRoot.slice(0, 2) === '0x') {
+      stateRoot = block.stateRoot.slice(2)
+    }
+    return this.getSliceById(`${path}-${depth || this.depth}-${stateRoot}`)
   }
 
   async start () {
@@ -85,7 +94,7 @@ class KitsunetSliceTracker extends EventEmitter {
     // here for completeness
   }
 
-  async getSliceById (sliceId) {
+  async getSliceById (sliceId, isStorage) {
     const [path, depth] = sliceId.split('-')
     // if slice exists, return it
     if (this.slices.has(sliceId)) {
@@ -93,10 +102,14 @@ class KitsunetSliceTracker extends EventEmitter {
     }
 
     const deferred = Promise.race([
-      Promise((resolve) => {
+      new Promise((resolve) => {
         this.on(`latest:${path}-${depth}`, (slice) => {
           if (slice.sliceId === sliceId) {
             return resolve(slice)
+          }
+
+          if (this.slices.has(sliceId)) {
+            return resolve(this.slices.get(sliceId))
           }
         })
       }).then(() => this.slices.get(sliceId)),
@@ -104,14 +117,17 @@ class KitsunetSliceTracker extends EventEmitter {
     ])
 
     // subscribe to slice topic
-    this.node.multicast.subscribe(`${this.topic}:${sliceId}`, this._handler.bind(this), () => { })
+    // this.node.multicast.addFrwdHooks(`${this.topic}:${path}-${depth}`, [this._hook.bind(this)])
+    this.node.multicast.subscribe(`${this.topic}:${path}-${depth}`,
+      this._handler.bind(this),
+      () => { })
     return deferred
   }
 
   _handler (msg) {
     const data = msg.data.toString()
     try {
-      const slice = normalizeSlice(JSON.parse(data))
+      const slice = normalizeKeys(JSON.parse(data))
       this.slices.set(slice.sliceId, slice)
       const [path, depth] = slice.sliceId.split('-')
       this.emit(`latest:${path}-${depth}`, slice)
