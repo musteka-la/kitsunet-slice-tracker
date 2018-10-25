@@ -16,7 +16,8 @@
     "lodash.camelcase": "^4.3.0",
     "lodash.isplainobject": "^4.0.6",
     "lodash.mapkeys": "^4.6.0",
-    "lodash.transform": "^4.6.0"
+    "lodash.transform": "^4.6.0",
+    "pify": "^4.0.1"
   },
   "devDependencies": {
     "tape": "^4.9.1"

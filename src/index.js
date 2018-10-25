@@ -7,11 +7,18 @@ const transform = require('lodash.transform')
 const camelCase = require('lodash.camelcase')
 const isPlainObject = require('lodash.isplainobject')
 
+const pify = require('pify')
+
 const log = require('debug')('kitsunet:slice-tracker')
 
 const DEFAULT_TOPIC = `kitsunet:slice`
 const DEFAULT_SLICE_TIMEOUT = 2 * 60 * 10000
 const DEFAULT_DEPTH = 10
+
+const TRACK_SLICE = `kitsunet:slice:track`
+const TRACK_STORAGE_SLICE = `kitsunet:slice:track-storage`
+
+const noop = () => {}
 
 function normalizeKeys (obj) {
   return transform(obj, (result, value, key) => {
@@ -49,6 +56,12 @@ class KitsunetSliceTracker extends EventEmitter {
 
     this.peerSlices = new Map()
     this.slices = new Map()
+    this.waitingSlice = new Map()
+
+    this.multicast = pify(this.node.multicast)
+
+    this._track = (msg) => this._handleTrack(msg)
+    this._trackStorage = (msg) => this._handleTrack(msg, true)
   }
 
   _hook (peer, msg, cb) {
@@ -75,7 +88,9 @@ class KitsunetSliceTracker extends EventEmitter {
 
   async getLatestSlice (path, depth, isStorage) {
     const block = await this.blockTracker.getLatestBlock()
-    return this.getSliceForBlock(path, depth || this.depth, block)
+    const slice = await this.getSliceForBlock(path, depth || this.depth, block)
+    this.emit(`latest:${path}-${depth}`, slice)
+    return slice
   }
 
   async getSliceForBlock (path, depth, block, isStorage) {
@@ -83,62 +98,94 @@ class KitsunetSliceTracker extends EventEmitter {
     if (stateRoot.slice(0, 2) === '0x') {
       stateRoot = block.stateRoot.slice(2)
     }
-    return this.getSliceById(`${path}-${depth || this.depth}-${stateRoot}`)
+    return this.getSliceById(`${path}-${depth || this.depth}-${stateRoot}`, isStorage)
   }
 
   async start () {
-    // here for completeness
+    this.multicast.subscribe(TRACK_SLICE, this._track)
+    this.multicast.subscribe(TRACK_STORAGE_SLICE, this._trackStorage)
   }
 
   async stop () {
-    // here for completeness
+    this.multicast.unsubscribe(TRACK_SLICE, this._track)
+    this.multicast.unsubscribe(TRACK_STORAGE_SLICE, this._trackStorage)
   }
 
   async getSliceById (sliceId, isStorage) {
-    const [path, depth] = sliceId.split('-')
+    const [path, depth, root] = sliceId.split('-')
     // if slice exists, return it
     if (this.slices.has(sliceId)) {
       return this.slices.get(sliceId)
     }
 
+    if (this.waitingSlice.has(sliceId)) {
+      return this.waitingSlice.get(sliceId)
+    }
+
     const deferred = Promise.race([
       new Promise((resolve) => {
-        this.on(`latest:${path}-${depth}`, (slice) => {
+        this.once(`slice:${path}-${depth}-${root}`, (slice) => {
           if (slice.sliceId === sliceId) {
             return resolve(slice)
           }
 
           if (this.slices.has(sliceId)) {
-            return resolve(this.slices.get(sliceId))
+            return resolve(slice)
           }
         })
-      }).then(() => this.slices.get(sliceId)),
+      }).then((slice) => {
+        this.waitingSlice.delete(sliceId)
+        return slice
+      }),
       timeout(DEFAULT_SLICE_TIMEOUT)
     ])
 
+    this.waitingSlice.set(sliceId, deferred)
+
     // subscribe to slice topic
-    // this.node.multicast.addFrwdHooks(`${this.topic}:${path}-${depth}`, [this._hook.bind(this)])
-    this.subscribe({path, depth})
+    this.subscribe({ path, depth, isStorage })
     return deferred
   }
 
-  subscribe ({path, depth}) {
-    this.node.multicast.subscribe(`${this.topic}:${path}-${depth}`,
-      this._handler.bind(this),
-      () => { })
+  async subscribe ({path, depth, isStorage}) {
+    try {
+      const subscriptions = await this.multicast.ls()
+      const topic = `${this.topic}:${path}-${depth || this.depth}`
+      if (subscriptions.indexOf(topic) < 0) {
+        this.multicast.addFrwdHooks(topic, [this._hook.bind(this)])
+
+        this.multicast.subscribe(topic, this._handleSlice.bind(this))
+
+        if (isStorage) {
+          return this.multicast.publish(TRACK_STORAGE_SLICE, Buffer.from(`${path}-${depth}`), -1)
+        }
+
+        this.multicast.publish(TRACK_SLICE, Buffer.from(`${path}-${depth}`), -1)
+      }
+    } catch (err) {
+      log(err)
+    }
   }
 
-  _handler (msg) {
+  _handleSlice (msg) {
     const data = msg.data.toString()
     try {
       const slice = normalizeKeys(JSON.parse(data))
       this.slices.set(slice.sliceId, slice)
-      const [path, depth] = slice.sliceId.split('-')
-      this.emit(`latest:${path}-${depth}`, slice)
-      this.emit(`slice:${path}-${depth}`, slice)
+      const [path, depth, root] = slice.sliceId.split('-')
+      this.emit(`slice:${path}-${depth}-${root}`, slice)
     } catch (err) {
       log(err)
     }
+  }
+
+  _handleTrack (msg, isStorage) {
+    const slice = msg.data.toString()
+    if (isStorage) {
+      return this.emit('track-storage', slice)
+    }
+
+    this.emit('track', slice)
   }
 }
 
