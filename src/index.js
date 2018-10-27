@@ -12,13 +12,11 @@ const pify = require('pify')
 const log = require('debug')('kitsunet:slice-tracker')
 
 const DEFAULT_TOPIC = `kitsunet:slice`
-const DEFAULT_SLICE_TIMEOUT = 2 * 60 * 10000
+const DEFAULT_SLICE_TIMEOUT = 2 * 60 * 1000
 const DEFAULT_DEPTH = 10
 
 const TRACK_SLICE = `kitsunet:slice:track`
 const TRACK_STORAGE_SLICE = `kitsunet:slice:track-storage`
-
-const noop = () => {}
 
 function normalizeKeys (obj) {
   return transform(obj, (result, value, key) => {
@@ -35,8 +33,8 @@ function normalizeKeys (obj) {
 }
 
 function timeout (length) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, length)
+  return new Promise((resolve, reject) => {
+    setTimeout(() => reject(new Error('timeout')), length)
   })
 }
 
@@ -138,29 +136,45 @@ class KitsunetSliceTracker extends EventEmitter {
         return slice
       }),
       timeout(DEFAULT_SLICE_TIMEOUT)
-    ])
+    ]).catch((err) => {
+      log(err)
+      this.waitingSlice.delete(sliceId)
+      throw new Error(err)
+    })
 
     this.waitingSlice.set(sliceId, deferred)
 
     // subscribe to slice topic
-    this.subscribe({ path, depth, isStorage })
+    this.subscribe({ path, depth, root, isStorage })
     return deferred
   }
 
-  async subscribe ({path, depth, isStorage}) {
+  async publish (slice) {
+    slice = normalizeKeys(slice)
+    const [path, depth] = slice.sliceId.split('-')
+    const topic = `${this.topic}:${path}-${depth || this.depth}`
+    this.multicast.addFrwdHooks(topic, [this._hook.bind(this)])
+    this.multicast.publish(topic, Buffer.from(JSON.stringify(slice)), -1)
+  }
+
+  async subscribe ({ path, depth, root, isStorage }) {
     try {
+      let sliceId = `${path}-${depth}`
+      if (root) { sliceId = `${sliceId}-${root}` }
+
+      // TODO: there must be a better way of letting the network that we need a slice
+      if (isStorage) {
+        this.multicast.publish(TRACK_STORAGE_SLICE, Buffer.from(sliceId), -1)
+      } else {
+        this.multicast.publish(TRACK_SLICE, Buffer.from(sliceId), -1)
+      }
+
       const subscriptions = await this.multicast.ls()
       const topic = `${this.topic}:${path}-${depth || this.depth}`
       if (subscriptions.indexOf(topic) < 0) {
         this.multicast.addFrwdHooks(topic, [this._hook.bind(this)])
 
         this.multicast.subscribe(topic, this._handleSlice.bind(this))
-
-        if (isStorage) {
-          return this.multicast.publish(TRACK_STORAGE_SLICE, Buffer.from(`${path}-${depth}`), -1)
-        }
-
-        this.multicast.publish(TRACK_SLICE, Buffer.from(`${path}-${depth}`), -1)
       }
     } catch (err) {
       log(err)
