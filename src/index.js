@@ -84,9 +84,19 @@ class KitsunetSliceTracker extends EventEmitter {
     return cb(null, msg)
   }
 
+  async start () {
+    this.multicast.subscribe(TRACK_SLICE, this._track)
+    this.multicast.subscribe(TRACK_STORAGE_SLICE, this._trackStorage)
+  }
+
+  async stop () {
+    this.multicast.unsubscribe(TRACK_SLICE, this._track)
+    this.multicast.unsubscribe(TRACK_STORAGE_SLICE, this._trackStorage)
+  }
+
   async getLatestSlice (path, depth, isStorage) {
     const block = await this.blockTracker.getLatestBlock()
-    const slice = await this.getSliceForBlock(path, depth || this.depth, block)
+    const slice = await this.getSliceForBlock(path, depth || this.depth, block, isStorage)
     this.emit(`latest:${path}-${depth}`, slice)
     return slice
   }
@@ -97,16 +107,6 @@ class KitsunetSliceTracker extends EventEmitter {
       stateRoot = block.stateRoot.slice(2)
     }
     return this.getSliceById(`${path}-${depth || this.depth}-${stateRoot}`, isStorage)
-  }
-
-  async start () {
-    this.multicast.subscribe(TRACK_SLICE, this._track)
-    this.multicast.subscribe(TRACK_STORAGE_SLICE, this._trackStorage)
-  }
-
-  async stop () {
-    this.multicast.unsubscribe(TRACK_SLICE, this._track)
-    this.multicast.unsubscribe(TRACK_STORAGE_SLICE, this._trackStorage)
   }
 
   async getSliceById (sliceId, isStorage) {
@@ -188,6 +188,7 @@ class KitsunetSliceTracker extends EventEmitter {
       this.slices.set(slice.sliceId, slice)
       const [path, depth, root] = slice.sliceId.split('-')
       this.emit(`slice:${path}-${depth}-${root}`, slice)
+      this.emit(`latest`, slice)
     } catch (err) {
       log(err)
     }
