@@ -12,7 +12,7 @@ const pify = require('pify')
 const log = require('debug')('kitsunet:slice-tracker')
 
 const DEFAULT_TOPIC = `kitsunet:slice`
-const DEFAULT_SLICE_TIMEOUT = 2 * 60 * 1000
+const DEFAULT_SLICE_TIMEOUT = 4 * 60 * 1000
 const DEFAULT_DEPTH = 10
 
 const TRACK_SLICE = `kitsunet:slice:track`
@@ -162,18 +162,16 @@ class KitsunetSliceTracker extends EventEmitter {
       let sliceId = `${path}-${depth}`
       if (root) { sliceId = `${sliceId}-${root}` }
 
-      // TODO: there must be a better way of letting the network that we need a slice
-      if (isStorage) {
-        this.multicast.publish(TRACK_STORAGE_SLICE, Buffer.from(sliceId), -1)
-      } else {
-        this.multicast.publish(TRACK_SLICE, Buffer.from(sliceId), -1)
-      }
-
       const subscriptions = await this.multicast.ls()
       const topic = `${this.topic}:${path}-${depth || this.depth}`
       if (subscriptions.indexOf(topic) < 0) {
-        this.multicast.addFrwdHooks(topic, [this._hook.bind(this)])
+        if (isStorage) {
+          this.multicast.publish(TRACK_STORAGE_SLICE, Buffer.from(sliceId), -1)
+        } else {
+          this.multicast.publish(TRACK_SLICE, Buffer.from(sliceId), -1)
+        }
 
+        this.multicast.addFrwdHooks(topic, [this._hook.bind(this)])
         this.multicast.subscribe(topic, this._handleSlice.bind(this))
       }
     } catch (err) {
