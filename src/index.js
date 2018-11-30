@@ -7,12 +7,14 @@ const transform = require('lodash.transform')
 const camelCase = require('lodash.camelcase')
 const isPlainObject = require('lodash.isplainobject')
 
+const LruCache = require('mnemonist/lru-cache')
+
 const pify = require('pify')
 
 const log = require('debug')('kitsunet:slice-tracker')
 
 const DEFAULT_TOPIC = `kitsunet:slice`
-const DEFAULT_SLICE_TIMEOUT = 4 * 60 * 1000
+const DEFAULT_SLICE_TIMEOUT = 60 * 1000
 const DEFAULT_DEPTH = 10
 
 const TRACK_SLICE = `kitsunet:slice:track`
@@ -52,8 +54,8 @@ class KitsunetSliceTracker extends EventEmitter {
     this.started = false
     this.depth = depth || DEFAULT_DEPTH
 
-    this.peerSlices = new Map()
-    this.slices = new Map()
+    this.forwardedSlices = new LruCache(1000)
+    this.slices = new LruCache(100)
     this.waitingSlice = new Map()
 
     this.multicast = pify(this.node.multicast)
@@ -74,14 +76,17 @@ class KitsunetSliceTracker extends EventEmitter {
       return cb(err)
     }
 
-    const peerSlices = this.peerSlices.has(peer.info.id.toB58String()) || new Set()
-    if (peerSlices.has(slice.sliceId)) {
-      const msg = `already forwarded to peer, skipping slice ${slice.sliceId}`
-      log(msg)
-      return cb(msg)
+    const peerId = peer.info.id.toB58String()
+    const slices = this.forwardedSlices.get(peerId) || new LruCache(1000)
+    if (!slices.has(slice.sliceId)) {
+      this.forwardedSlices.set(peerId, slices)
+      slices.set(slice.sliceId, true)
+      return cb(null, msg)
     }
-    peerSlices.add(slice.sliceId)
-    return cb(null, msg)
+
+    const skipMsg = `already forwarded to peer, skipping slice ${slice.sliceId}`
+    log(skipMsg)
+    return cb(skipMsg)
   }
 
   async start () {
@@ -106,6 +111,7 @@ class KitsunetSliceTracker extends EventEmitter {
     if (stateRoot.slice(0, 2) === '0x') {
       stateRoot = block.stateRoot.slice(2)
     }
+
     return this.getSliceById(`${path}-${depth || this.depth}-${stateRoot}`, isStorage)
   }
 
