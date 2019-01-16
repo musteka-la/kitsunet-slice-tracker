@@ -20,7 +20,7 @@ const DEFAULT_DEPTH = 10
 const TRACK_SLICE = `kitsunet:slice:track`
 const TRACK_STORAGE_SLICE = `kitsunet:slice:track-storage`
 
-function normalizeKeys(obj) {
+function normalizeKeys (obj) {
   return transform(obj, (result, value, key) => {
     if (key === 'metadata') { return }
     if (isPlainObject(value)) {
@@ -34,14 +34,14 @@ function normalizeKeys(obj) {
   }, {})
 }
 
-function timeout(length) {
+function timeout (length) {
   return new Promise((resolve, reject) => {
     setTimeout(() => reject(new Error('timeout')), length)
   })
 }
 
 class KitsunetSliceTracker extends EventEmitter {
-  constructor({ node, blockTracker, depth }) {
+  constructor ({ node, blockTracker, depth }) {
     super()
 
     assert(node, 'node is required!')
@@ -62,9 +62,12 @@ class KitsunetSliceTracker extends EventEmitter {
 
     this._track = (msg) => this._handleTrack(msg)
     this._trackStorage = (msg) => this._handleTrack(msg, true)
+
+    this.slicesHook = this._slicesHook.bind(this)
+    this.handleSlice = this._handleSlice.bind(this)
   }
 
-  _hook(peer, msg, cb) {
+  _slicesHook (peer, msg, cb) {
     let slice = null
     try {
       slice = normalizeKeys(JSON.parse(msg.data.toString()))
@@ -79,34 +82,34 @@ class KitsunetSliceTracker extends EventEmitter {
     const peerId = peer.info.id.toB58String()
     const slices = this.forwardedSlices.get(peerId) || new LruCache(1000)
     if (!slices.has(slice.sliceId)) {
-      this.forwardedSlices.set(peerId, slices)
       slices.set(slice.sliceId, true)
+      this.forwardedSlices.set(peerId, slices)
       return cb(null, msg)
     }
 
-    const skipMsg = `already forwarded to peer, skipping slice ${slice.sliceId}`
+    const skipMsg = `already forwarded to peer ${peerId}, skipping slice ${slice.sliceId}`
     log(skipMsg)
     return cb(skipMsg)
   }
 
-  async start() {
+  async start () {
     this.multicast.subscribe(TRACK_SLICE, this._track)
     this.multicast.subscribe(TRACK_STORAGE_SLICE, this._trackStorage)
   }
 
-  async stop() {
+  async stop () {
     this.multicast.unsubscribe(TRACK_SLICE, this._track)
     this.multicast.unsubscribe(TRACK_STORAGE_SLICE, this._trackStorage)
   }
 
-  async getLatestSlice(path, depth, isStorage) {
+  async getLatestSlice (path, depth, isStorage) {
     const block = await this.blockTracker.getLatestBlock()
     const slice = await this.getSliceForBlock(path, depth || this.depth, block, isStorage)
     this.emit(`latest:${path}-${depth}`, slice)
     return slice
   }
 
-  async getSliceForBlock(path, depth, block, isStorage) {
+  async getSliceForBlock (path, depth, block, isStorage) {
     let stateRoot = block.stateRoot
     if (stateRoot.slice(0, 2) === '0x') {
       stateRoot = block.stateRoot.slice(2)
@@ -115,7 +118,7 @@ class KitsunetSliceTracker extends EventEmitter {
     return this.getSliceById(`${path}-${depth || this.depth}-${stateRoot}`, isStorage)
   }
 
-  async getSliceById(sliceId, isStorage) {
+  async getSliceById (sliceId, isStorage) {
     const [path, depth, root] = sliceId.split('-')
     // if slice exists, return it
     if (this.slices.has(sliceId)) {
@@ -155,15 +158,15 @@ class KitsunetSliceTracker extends EventEmitter {
     return deferred
   }
 
-  async publish(slice) {
+  async publish (slice) {
     slice = normalizeKeys(slice)
     const [path, depth] = slice.sliceId.split('-')
     const topic = `${this.topic}:${path}-${depth || this.depth}`
-    this.multicast.addFrwdHooks(topic, [this._hook.bind(this)])
+    this.multicast.addFrwdHooks(topic, [this.slicesHook])
     this.multicast.publish(topic, Buffer.from(JSON.stringify(slice)), -1)
   }
 
-  async subscribe({ path, depth, root, isStorage }) {
+  async subscribe ({ path, depth, root, isStorage }) {
     try {
       let sliceId = `${path}-${depth}`
       if (root) { sliceId = `${sliceId}-${root}` }
@@ -177,7 +180,7 @@ class KitsunetSliceTracker extends EventEmitter {
           this.multicast.publish(TRACK_SLICE, Buffer.from(sliceId), -1)
         }
 
-        this.multicast.addFrwdHooks(topic, [this._hook.bind(this)])
+        this.multicast.addFrwdHooks(topic, [this.slicesHook])
         this.multicast.subscribe(topic, this._handleSlice.bind(this))
       }
     } catch (err) {
@@ -185,7 +188,7 @@ class KitsunetSliceTracker extends EventEmitter {
     }
   }
 
-  _handleSlice(msg) {
+  _handleSlice (msg) {
     const data = msg.data.toString()
     try {
       const slice = normalizeKeys(JSON.parse(data))
@@ -198,7 +201,7 @@ class KitsunetSliceTracker extends EventEmitter {
     }
   }
 
-  _handleTrack(msg, isStorage) {
+  _handleTrack (msg, isStorage) {
     const slice = msg.data.toString()
     if (isStorage) {
       return this.emit('track-storage', slice)
