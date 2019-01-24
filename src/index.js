@@ -14,7 +14,7 @@ const pify = require('pify')
 const log = require('debug')('kitsunet:slice-tracker')
 
 const DEFAULT_TOPIC = `kitsunet:slice`
-const DEFAULT_SLICE_TIMEOUT = 60 * 1000
+const DEFAULT_SLICE_TIMEOUT = 80 * 1000
 const DEFAULT_DEPTH = 10
 
 const TRACK_SLICE = `kitsunet:slice:track`
